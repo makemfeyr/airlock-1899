@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Airlock 1899 — Steampunk Audio Asset Generator</title>
+  <style>
+    body {
+      background: #0b0e14;
+      color: #f59e0b;
+      font-family: 'Courier New', monospace;
+      padding: 30px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 { border-bottom: 2px solid #b45309; padding-bottom: 10px; color: #fbbf24; }
+    p { color: #94a3b8; line-height: 1.5; }
+    .toolbar {
+      margin: 20px 0;
+      padding: 15px;
+      background: #141a24;
+      border: 1px solid #b45309;
+      display: flex;
+      gap: 15px;
+      align-items: center;
+    }
+    button {
+      background: #b45309;
+      color: #fff;
+      border: 1px solid #fbbf24;
+      padding: 10px 16px;
+      font-family: inherit;
+      font-weight: bold;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    button:hover { background: #d97706; }
+    .track-list { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .track-card {
+      background: #111620;
+      border: 1px solid #334155;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-radius: 4px;
+    }
+    .track-info strong { color: #e2e8f0; font-size: 15px; }
+    .track-info span { color: #64748b; font-size: 12px; display: block; margin-top: 3px; }
+    .track-actions { display: flex; gap: 8px; }
+    .badge {
+      background: #1e293b;
+      color: #38bdf8;
+      padding: 2px 6px;
+      font-size: 11px;
+      border-radius: 3px;
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>⚙️ AIRLOCK 1899: BGM & SFX ASSET GENERATOR</h1>
+  <p>
+    Synthesizes multi-layered steampunk horror BGM loops and mechanical SFX using Web Audio 
+    <code>OfflineAudioContext</code> and exports standard 16-bit 44.1kHz <code>.wav</code> files.
+  </p>
+
+  <div class="toolbar">
+    <button id="btnDownloadAll" onclick="downloadAll()">⬇️ GENERATE & DOWNLOAD ALL (11 FILES)</button>
+    <span id="statusText">Ready to synthesize.</span>
+  </div>
+
+  <div class="track-list" id="trackList"></div>
+
+<script>
+const SAMPLE_RATE = 44100;
+
+const ASSETS = [
+  // BGM Tracks
+  { id: 'bgm_menu', folder: 'bgm', duration: 10.0, desc: 'Low CRT terminal hum, boiler sub-bass & telegraph relay clicks' },
+  { id: 'bgm_bunker_ambient', folder: 'bgm', duration: 12.0, desc: 'Subterranean cavern drone, distant pipe groans & steam vents' },
+  { id: 'bgm_chase', folder: 'bgm', duration: 6.4, desc: '150 BPM industrial piston percussion, anvil strikes & terror brass' },
+  // SFX Tracks
+  { id: 'step', folder: 'sfx', duration: 0.32, desc: 'Heavy diving boot impact on iron floor grating' },
+  { id: 'enemy_step', folder: 'sfx', duration: 0.65, desc: 'Massive biomechanical monster stomp with hydraulic hiss' },
+  { id: 'door', folder: 'sfx', duration: 1.10, desc: 'Pneumatic cast-iron bulkhead door slide and latch' },
+  { id: 'door_slam', folder: 'sfx', duration: 0.85, desc: 'Monster pounding violently on sealed iron bulkhead' },
+  { id: 'trap', folder: 'sfx', duration: 0.70, desc: 'Mechanical steel bear-trap snap & pressurized tar burst' },
+  { id: 'refuel', folder: 'sfx', duration: 1.20, desc: 'Pressurized kerosene glugging & brass valve hiss' },
+  { id: 'alert', folder: 'sfx', duration: 1.50, desc: 'Dissonant acoustic monster shriek & rusted steam whistle' },
+  { id: 'death', folder: 'sfx', duration: 2.20, desc: 'Blackout jumpscare brass stinger & sub-bass drop' }
+];
+
+// Create UI Cards
+const listEl = document.getElementById('trackList');
+ASSETS.forEach(item => {
+  const card = document.createElement('div');
+  card.className = 'track-card';
+  card.innerHTML = `
+    <div class="track-info">
+      <strong><span class="badge">${item.folder.toUpperCase()}</span>assets/audio/${item.folder}/${item.id}.wav</strong>
+      <span>${item.desc} (${item.duration}s)</span>
+    </div>
+    <div class="track-actions">
+      <button onclick="previewTrack('${item.id}')">▶ Preview</button>
+      <button onclick="downloadTrack('${item.id}')">⬇ .WAV</button>
+    </div>
+  `;
+  listEl.appendChild(card);
+});
+
+// Helper: Generate noise buffer
+function createNoiseBuffer(ctx, duration, type = 'white') {
+  const len = Math.floor(ctx.sampleRate * duration);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < len; i++) {
+    const white = Math.random() * 2 - 1;
+    if (type === 'pink') {
+      b0 = 0.99765 * b0 + white * 0.0990460;
+      b1 = 0.96300 * b1 + white * 0.2965164;
+      b2 = 0.57000 * b2 + white * 1.0526913;
+      data[i] = (b0 + b1 + b2 + white * 0.1848) * 0.15;
+    } else {
+      data[i] = white;
+    }
+  }
+  return buf;
+}
+
+// Synthesize specific track into an AudioBuffer
+async function renderAsset(id) {
+  const spec = ASSETS.find(a => a.id === id);
+  const ctx = new OfflineAudioContext(1, Math.floor(SAMPLE_RATE * spec.duration), SAMPLE_RATE);
+  const dur = spec.duration;
+
+  if (id === 'bgm_menu') {
+    // Deep boiler drone (36.7Hz D1 + 55Hz A1)
+    [36.71, 55.0, 73.42].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      osc.type = idx === 0 ? 'sawtooth' : 'triangle';
+      osc.frequency.value = freq;
+      filter.type = 'lowpass';
+      filter.frequency.value = 120;
+      gain.gain.setValueAtTime(0.01, 0);
+      gain.gain.linearRampToValueAtTime(0.22 / (idx + 1), 0.8);
+      gain.gain.setValueAtTime(0.22 / (idx + 1), dur - 0.8);
+      gain.gain.linearRampToValueAtTime(0.01, dur);
+      osc.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+      osc.start(0); osc.stop(dur);
+    });
+    // Telegraph / Geiger clicks
+    for (let t = 0.4; t < dur - 0.3; t += 0.65 + Math.random() * 0.9) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(920, t);
+      osc.frequency.exponentialRampToValueAtTime(180, t + 0.03);
+      g.gain.setValueAtTime(0.06, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t); osc.stop(t + 0.04);
+    }
+  }
+
+  else if (id === 'bgm_bunker_ambient') {
+    // Subterranean drone
+    [32.7, 49.0, 65.4].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      filter.type = 'lowpass';
+      filter.frequency.value = 95;
+      g.gain.setValueAtTime(0.01, 0);
+      g.gain.linearRampToValueAtTime(0.24 / (i + 1), 1.0);
+      g.gain.setValueAtTime(0.24 / (i + 1), dur - 1.0);
+      g.gain.linearRampToValueAtTime(0.01, dur);
+      osc.connect(filter); filter.connect(g); g.connect(ctx.destination);
+      osc.start(0); osc.stop(dur);
+    });
+    // Eerie metallic pipe groans
+    [1.5, 4.8, 8.2].forEach((t, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const baseF = [110, 146.8, 98][idx % 3];
+      osc.frequency.setValueAtTime(baseF, t);
+      osc.frequency.linearRampToValueAtTime(baseF * 0.96, t + 2.4);
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.12, t + 0.6);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 2.5);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t); osc.stop(t + 2.6);
+    });
+  }
+
+  else if (id === 'bgm_chase') {
+    const stepTime = 0.2; // 150 BPM sixteenth/eighth pulse
+    const scale = [73.42, 77.78, 87.31, 110.0];
+    for (let step = 0; step < Math.floor(dur / stepTime); step++) {
+      const t = step * stepTime;
+      const isAccent = (step % 4 === 0);
+      // Industrial piston kick
+      const kick = ctx.createOscillator();
+      const kg = ctx.createGain();
+      kick.type = 'triangle';
+      kick.frequency.setValueAtTime(isAccent ? 135 : 90, t);
+      kick.frequency.exponentialRampToValueAtTime(28, t + 0.15);
+      kg.gain.setValueAtTime(isAccent ? 0.45 : 0.22, t);
+      kg.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      kick.connect(kg); kg.connect(ctx.destination);
+      kick.start(t); kick.stop(t + 0.17);
+
+      // Metallic anvil strike on off-beats
+      if (step % 2 === 1) {
+        const noise = ctx.createBufferSource();
+        noise.buffer = createNoiseBuffer(ctx, 0.08, 'white');
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass'; bp.frequency.value = 2400; bp.Q.value = 4.0;
+        const ng = ctx.createGain();
+        ng.gain.setValueAtTime(0.18, t);
+        ng.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+        noise.connect(bp); bp.connect(ng); ng.connect(ctx.destination);
+        noise.start(t);
+      }
+
+      // Dissonant brass stab on downbeats
+      if (isAccent) {
+        const stab = ctx.createOscillator();
+        const sg = ctx.createGain();
+        stab.type = 'sawtooth';
+        stab.frequency.setValueAtTime(scale[(step / 4) % scale.length] * 2, t);
+        sg.gain.setValueAtTime(0.18, t);
+        sg.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+        stab.connect(sg); sg.connect(ctx.destination);
+        stab.start(t); stab.stop(t + 0.34);
+      }
+    }
+  }
+
+  else if (id === 'step') {
+    // Boot thud + metallic grate clink
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(130, 0);
+    osc.frequency.exponentialRampToValueAtTime(38, 0.09);
+    g.gain.setValueAtTime(0.5, 0);
+    g.gain.exponentialRampToValueAtTime(0.001, 0.11);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(0); osc.stop(0.12);
+
+    const n = ctx.createBufferSource();
+    n.buffer = createNoiseBuffer(ctx, 0.15, 'white');
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'bandpass'; hp.frequency.value = 1800; hp.Q.value = 3.0;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.25, 0.01);
+    ng.gain.exponentialRampToValueAtTime(0.001, 0.14);
+    n.connect(hp); hp.connect(ng); ng.connect(ctx.destination);
+    n.start(0.01);
+  }
+
+  else if (id === 'enemy_step') {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(85, 0);
+    osc.frequency.exponentialRampToValueAtTime(22, 0.35);
+    g.gain.setValueAtTime(0.7, 0);
+    g.gain.exponentialRampToValueAtTime(0.001, 0.42);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(0); osc.stop(0.45);
+
+    // Hydraulic steam hiss tail
+    const n = ctx.createBufferSource();
+    n.buffer = createNoiseBuffer(ctx, 0.4, 'pink');
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.25, 0.08);
+    ng.gain.exponentialRampToValueAtTime(0.001, 0.45);
+    n.connect(ng); ng.connect(ctx.destination);
+    n.start(0.08);
+  }
+
+  else if (id === 'door') {
+    // Pneumatic hiss + heavy iron slide + latch thud
+    const n = ctx.createBufferSource();
+    n.buffer = createNoiseBuffer(ctx, 0.9, 'pink');
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.setValueAtTime(800, 0); bp.frequency.linearRampToValueAtTime(300, 0.8);
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.35, 0);
+    ng.gain.exponentialRampToValueAtTime(0.001, 0.85);
+    n.connect(bp); bp.connect(ng); ng.connect(ctx.destination);
+    n.start(0);
+
+    // Final iron slam
+    const clunk = ctx.createOscillator();
+    const cg = ctx.createGain();
+    clunk.type = 'square';
+    clunk.frequency.setValueAtTime(110, 0.75);
+    clunk.frequency.exponentialRampToValueAtTime(28, 1.05);
+    cg.gain.setValueAtTime(0.6, 0.75);
+    cg.gain.exponentialRampToValueAtTime(0.001, 1.08);
+    clunk.connect(cg); cg.connect(ctx.destination);
+    clunk.start(0.75); clunk.stop(1.09);
+  }
+
+  else if (id === 'door_slam') {
+    [0, 0.38].forEach(t => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(105, t);
+      osc.frequency.exponentialRampToValueAtTime(24, t + 0.32);
+      g.gain.setValueAtTime(0.75, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t); osc.stop(t + 0.36);
+    });
+  }
+
+  else if (id === 'trap') {
+    // Sharp metallic jaw snap + tar spray
+    const snap = ctx.createOscillator();
+    const sg = ctx.createGain();
+    snap.type = 'sawtooth';
+    snap.frequency.setValueAtTime(980, 0);
+    snap.frequency.exponentialRampToValueAtTime(75, 0.18);
+    sg.gain.setValueAtTime(0.65, 0);
+    sg.gain.exponentialRampToValueAtTime(0.001, 0.20);
+    snap.connect(sg); sg.connect(ctx.destination);
+    snap.start(0); snap.stop(0.22);
+
+    const n = ctx.createBufferSource();
+    n.buffer = createNoiseBuffer(ctx, 0.5, 'white');
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.35, 0.05);
+    ng.gain.exponentialRampToValueAtTime(0.001, 0.55);
+    n.connect(ng); ng.connect(ctx.destination);
+    n.start(0.05);
+  }
+
+  else if (id === 'refuel') {
+    // Rising liquid glug bubbles
+    for (let i = 0; i < 6; i++) {
+      const t = i * 0.16;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const base = 260 + i * 65;
+      osc.frequency.setValueAtTime(base, t);
+      osc.frequency.exponentialRampToValueAtTime(base * 1.45, t + 0.12);
+      g.gain.setValueAtTime(0.3, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t); osc.stop(t + 0.15);
+    }
+  }
+
+  else if (id === 'alert') {
+    // FM Monster Steam Shriek
+    const carrier = ctx.createOscillator();
+    const mod = ctx.createOscillator();
+    const modGain = ctx.createGain();
+    const g = ctx.createGain();
+
+    carrier.type = 'sawtooth';
+    carrier.frequency.setValueAtTime(220, 0);
+    carrier.frequency.linearRampToValueAtTime(740, 0.35);
+    carrier.frequency.exponentialRampToValueAtTime(160, 1.4);
+
+    mod.type = 'square';
+    mod.frequency.value = 48;
+    modGain.gain.value = 180;
+
+    g.gain.setValueAtTime(0.01, 0);
+    g.gain.linearRampToValueAtTime(0.55, 0.15);
+    g.gain.exponentialRampToValueAtTime(0.001, 1.45);
+
+    mod.connect(modGain);
+    modGain.connect(carrier.frequency);
+    carrier.connect(g);
+    g.connect(ctx.destination);
+
+    carrier.start(0); mod.start(0);
+    carrier.stop(1.48); mod.stop(1.48);
+  }
+
+  else if (id === 'death') {
+    // Dissonant horror brass cluster + sub drop
+    [55, 58.27, 82.41, 116.54, 155.56].forEach(freq => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq * 1.5, 0);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.5, 2.0);
+      g.gain.setValueAtTime(0.28, 0);
+      g.gain.exponentialRampToValueAtTime(0.001, 2.1);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(0); osc.stop(2.15);
+    });
+  }
+
+  return await ctx.startRendering();
+}
+
+// Convert AudioBuffer to 16-bit PCM WAV Blob
+function bufferToWavBlob(buffer) {
+  const numOfChan = buffer.numberOfChannels;
+  const length = buffer.length * numOfChan * 2 + 44;
+  const out = new ArrayBuffer(length);
+  const view = new DataView(out);
+  const sampleRate = buffer.sampleRate;
+  let pos = 0;
+
+  const setUint16 = (data) => { view.setUint16(pos, data, true); pos += 2; };
+  const setUint32 = (data) => { view.setUint32(pos, data, true); pos += 4; };
+
+  // RIFF identifier & WAVE header
+  setUint32(0x46464952); // "RIFF"
+  setUint32(length - 8);
+  setUint32(0x45564157); // "WAVE"
+  setUint32(0x20746d66); // "fmt "
+  setUint32(16);
+  setUint16(1);          // PCM
+  setUint16(numOfChan);
+  setUint32(sampleRate);
+  setUint32(sampleRate * 2 * numOfChan);
+  setUint16(numOfChan * 2);
+  setUint16(16);
+  setUint32(0x61746164); // "data"
+  setUint32(length - pos - 4);
+
+  const chanData = buffer.getChannelData(0);
+  for (let i = 0; i < chanData.length; i++) {
+    let sample = Math.max(-1, Math.min(1, chanData[i]));
+    sample = (sample < 0 ? sample * 32768 : sample * 32767) | 0;
+    view.setInt16(pos, sample, true);
+    pos += 2;
+  }
+  return new Blob([out], { type: 'audio/wav' });
+}
+
+let previewCtx = null;
+async function previewTrack(id) {
+  if (!previewCtx) previewCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const buf = await renderAsset(id);
+  const src = previewCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(previewCtx.destination);
+  src.start();
+}
+
+async function downloadTrack(id) {
+  const buf = await renderAsset(id);
+  const blob = bufferToWavBlob(buf);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${id}.wav`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadAll() {
+  const status = document.getElementById('statusText');
+  for (let i = 0; i < ASSETS.length; i++) {
+    const item = ASSETS[i];
+    status.textContent = `Synthesizing ${i + 1}/${ASSETS.length}: ${item.id}.wav...`;
+    await downloadTrack(item.id);
+    await new Promise(r => setTimeout(r, 350));
+  }
+  status.textContent = `✅ All 11 .WAV files downloaded! Move them into assets/audio/bgm/ and assets/audio/sfx/.`;
+}
+</script>
+</body>
+</html>

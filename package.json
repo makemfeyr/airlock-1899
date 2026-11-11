@@ -1,0 +1,12 @@
+{
+  "name": "airlock-1899",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test:rooms": "node --test server.test.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
